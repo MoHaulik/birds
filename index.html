@@ -1,304 +1,179 @@
-<!doctype html>
-<html>
+<!DOCTYPE html>
+<html lang="en">
   <head>
-    <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>AR Birds & Positional Audio</title>
+    <meta charset="UTF-8" />
+    <title>Polished WebXR Birds Experience</title>
     <style>
-      body, html {
+      body {
         margin: 0;
-        padding: 0;
         overflow: hidden;
-        background: #000;
-      }
-      #overlay {
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        z-index: 10;
-        background: rgba(0, 0, 0, 0.5);
-        color: #fff;
-        padding: 10px;
-        font-family: sans-serif;
-      }
-      #xr-button {
-        position: absolute;
-        bottom: 20px;
-        left: 50%;
-        transform: translateX(-50%);
-        padding: 10px 20px;
-        font-size: 16px;
-        z-index: 10;
       }
       canvas {
-        width: 100%;
-        height: 100%;
         display: block;
       }
     </style>
   </head>
   <body>
-    <div id="overlay">
-      <p>Relax and enjoy the experience as birds fly around you.</p>
-      <p>Listen as their calls move with them in space.</p>
-    </div>
-    <button id="xr-button" disabled>XR not available</button>
-    <canvas id="glcanvas"></canvas>
-
+    <!-- We load Three.js and the ARButton from a CDN -->
     <script type="module">
-      // ===== Global variables =====
-      let xrButton = document.getElementById('xr-button');
-      let glCanvas = document.getElementById('glcanvas');
-      let xrSession = null;
-      let xrRefSpace = null;
-      let gl = null;
-      let shaderProgram;
-      let birdBuffer;
-      const numBirds = 5;
-      let birds = []; // each bird will have position, velocity, and audio nodes
+      import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.154.0/build/three.module.js';
+      import { ARButton } from 'https://cdn.jsdelivr.net/npm/three@0.154.0/examples/jsm/webxr/ARButton.js';
 
-      // Create an AudioContext for positional audio.
-      let audioContext = new (window.AudioContext || window.webkitAudioContext)();
+      // Define a Bird class for our flying pixels
+      class Bird {
+        constructor() {
+          // Initialize position randomly within a small volume
+          this.position = new THREE.Vector3(
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 4,
+            (Math.random() - 0.5) * 4
+          );
+          // Set a random small velocity
+          this.velocity = new THREE.Vector3(
+            (Math.random() - 0.5) * 0.02,
+            (Math.random() - 0.5) * 0.02,
+            (Math.random() - 0.5) * 0.02
+          );
+          // Start with a default state
+          this.state = "flying";
+          // Timer to control state changes (in seconds)
+          this.timer = Math.random() * 5;
 
-      // ===== Shader utilities =====
-      function createShader(gl, type, source) {
-        const shader = gl.createShader(type);
-        gl.shaderSource(shader, source);
-        gl.compileShader(shader);
-        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
-          console.error("Shader compile error:", gl.getShaderInfoLog(shader));
-          gl.deleteShader(shader);
-          return null;
-        }
-        return shader;
-      }
-
-      function createProgram(gl, vertexSource, fragmentSource) {
-        const vertexShader = createShader(gl, gl.VERTEX_SHADER, vertexSource);
-        const fragmentShader = createShader(gl, gl.FRAGMENT_SHADER, fragmentSource);
-        const program = gl.createProgram();
-        gl.attachShader(program, vertexShader);
-        gl.attachShader(program, fragmentShader);
-        gl.linkProgram(program);
-        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-          console.error("Program link error:", gl.getProgramInfoLog(program));
-          return null;
-        }
-        return program;
-      }
-
-      // ===== Shaders =====
-      const vertexShaderSource = `
-        attribute vec3 aPosition;
-        uniform mat4 uProjectionMatrix;
-        uniform mat4 uViewMatrix;
-        void main(void) {
-          gl_PointSize = 20.0;
-          gl_Position = uProjectionMatrix * uViewMatrix * vec4(aPosition, 1.0);
-        }
-      `;
-
-      const fragmentShaderSource = `
-        precision mediump float;
-        void main(void) {
-          gl_FragColor = vec4(1.0, 1.0, 0.0, 1.0); // Yellow color for birds
-        }
-      `;
-
-      // ===== XR Support Check =====
-      if (navigator.xr) {
-        navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
-          if (supported) {
-            xrButton.innerHTML = 'Enter AR';
-            xrButton.disabled = false;
-          } else {
-            xrButton.innerHTML = 'AR not supported';
-          }
-        });
-      } else {
-        xrButton.innerHTML = 'XR not available';
-      }
-
-      xrButton.addEventListener('click', onButtonClicked);
-
-      function onButtonClicked() {
-        if (!xrSession) {
-          // Request an immersive AR session with an optional DOM overlay.
-          navigator.xr.requestSession('immersive-ar', {
-            requiredFeatures: ['local'],
-            optionalFeatures: ['dom-overlay'],
-            domOverlay: { root: document.getElementById('overlay') }
-          }).then(onSessionStarted).catch(err => {
-            console.error("Failed to start XR session:", err);
+          // Create a sprite to represent the bird as a flying pixel.
+          // We use a 1x1 white pixel (tinted yellow) as a texture.
+          const spriteMap = new THREE.TextureLoader().load(
+            'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgYAAAAAMAASsJTYQAAAAASUVORK5CYII='
+          );
+          const spriteMaterial = new THREE.SpriteMaterial({
+            map: spriteMap,
+            color: 0xffff00, // yellow
           });
-        } else {
-          xrSession.end();
-        }
-      }
-
-      function onSessionStarted(session) {
-        xrSession = session;
-        xrButton.innerHTML = 'Exit AR';
-
-        // Set up WebGL context for XR.
-        gl = glCanvas.getContext('webgl', { xrCompatible: true });
-        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
-
-        session.requestReferenceSpace('local').then((refSpace) => {
-          xrRefSpace = refSpace;
-          initScene();
-          session.requestAnimationFrame(onXRFrame);
-        });
-
-        session.addEventListener('end', onSessionEnded);
-
-        // Resume audio context on session start if needed.
-        if (audioContext.state === 'suspended') {
-          audioContext.resume();
-        }
-      }
-
-      function onSessionEnded() {
-        xrSession = null;
-        xrButton.innerHTML = 'Enter AR';
-      }
-
-      // ===== Scene Initialization =====
-      function initScene() {
-        // Create and use our shader program.
-        shaderProgram = createProgram(gl, vertexShaderSource, fragmentShaderSource);
-        gl.useProgram(shaderProgram);
-
-        // Create a buffer to hold bird positions.
-        birdBuffer = gl.createBuffer();
-
-        // Initialize birds with random positions and small velocities.
-        birds = [];
-        for (let i = 0; i < numBirds; i++) {
-          let bird = {
-            // Position within a few meters of the user.
-            position: [
-              (Math.random() - 0.5) * 4,       // x: -2 to 2 meters
-              Math.random() * 2 + 1,             // y: 1 to 3 meters high
-              (Math.random() - 0.5) * 4          // z: -2 to 2 meters
-            ],
-            velocity: [
-              (Math.random() - 0.5) * 0.01,
-              (Math.random() - 0.5) * 0.01,
-              (Math.random() - 0.5) * 0.01
-            ],
-            panner: null,  // will hold the Web Audio PannerNode
-            source: null   // will hold the BufferSource for the bird sound
-          };
-          birds.push(bird);
+          this.sprite = new THREE.Sprite(spriteMaterial);
+          // Scale the sprite so it appears as a small pixel in AR space.
+          this.sprite.scale.set(0.1, 0.1, 0.1);
+          this.sprite.position.copy(this.position);
         }
 
-        // Load the bird sound once and assign it to each bird.
-        // Make sure a file named "bird.ogg" is in the same folder.
-        fetch('bird.ogg')
-          .then(response => response.arrayBuffer())
-          .then(data => audioContext.decodeAudioData(data))
-          .then(decodedData => {
-            birds.forEach((bird) => {
-              // Create a panner node for positional audio.
-              let panner = audioContext.createPanner();
-              panner.panningModel = 'HRTF';
-              panner.distanceModel = 'inverse';
-              panner.refDistance = 1;
-              panner.maxDistance = 20;
-              panner.rolloffFactor = 1;
-              panner.coneInnerAngle = 360;
-              panner.coneOuterAngle = 0;
-              panner.coneOuterGain = 0;
-              panner.setPosition(bird.position[0], bird.position[1], bird.position[2]);
-              bird.panner = panner;
-
-              // Create an audio buffer source node for looping sound.
-              let source = audioContext.createBufferSource();
-              source.buffer = decodedData;
-              source.loop = true;
-              source.connect(panner);
-              panner.connect(audioContext.destination);
-              bird.source = source;
-
-              // Start the audio.
-              source.start(0);
-            });
-          })
-          .catch(err => {
-            console.error("Error loading bird sound:", err);
-          });
-      }
-
-      // ===== XR Frame Rendering =====
-      function onXRFrame(time, frame) {
-        let session = frame.session;
-        session.requestAnimationFrame(onXRFrame);
-
-        // Update bird positions and their audio panner locations.
-        updateBirds();
-
-        // Bind the XR framebuffer and set viewport.
-        gl.bindFramebuffer(gl.FRAMEBUFFER, session.renderState.baseLayer.framebuffer);
-        gl.viewport(0, 0,
-          session.renderState.baseLayer.framebufferWidth,
-          session.renderState.baseLayer.framebufferHeight);
-
-        // Clear the scene with a sky-blue background.
-        gl.clearColor(0.0, 0.7, 1.0, 1.0);
-        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-
-        // Get the viewer pose from the XR frame.
-        let pose = frame.getViewerPose(xrRefSpace);
-        if (pose) {
-          // Use the first view for rendering.
-          let view = pose.views[0];
-          let projectionMatrix = view.projectionMatrix;
-          // The view matrix is the inverse of the XR view transform.
-          let viewMatrix = view.transform.inverse.matrix;
-
-          // Set the shader uniforms.
-          let uProjectionMatrix = gl.getUniformLocation(shaderProgram, 'uProjectionMatrix');
-          let uViewMatrix = gl.getUniformLocation(shaderProgram, 'uViewMatrix');
-          gl.uniformMatrix4fv(uProjectionMatrix, false, projectionMatrix);
-          gl.uniformMatrix4fv(uViewMatrix, false, viewMatrix);
-
-          // Build an array of bird positions.
-          let positions = [];
-          birds.forEach(bird => {
-            positions.push(bird.position[0], bird.position[1], bird.position[2]);
-            // Update the audio panner position for each bird.
-            if (bird.panner) {
-              bird.panner.setPosition(bird.position[0], bird.position[1], bird.position[2]);
-            }
-          });
-          let posArray = new Float32Array(positions);
-          gl.bindBuffer(gl.ARRAY_BUFFER, birdBuffer);
-          gl.bufferData(gl.ARRAY_BUFFER, posArray, gl.DYNAMIC_DRAW);
-
-          // Bind the position attribute.
-          let aPosition = gl.getAttribLocation(shaderProgram, 'aPosition');
-          gl.enableVertexAttribArray(aPosition);
-          gl.vertexAttribPointer(aPosition, 3, gl.FLOAT, false, 0, 0);
-
-          // Draw the birds as points.
-          gl.drawArrays(gl.POINTS, 0, birds.length);
-        }
-      }
-
-      // ===== Update Birds =====
-      function updateBirds() {
-        // Move each bird a little bit each frame.
-        birds.forEach(bird => {
-          for (let i = 0; i < 3; i++) {
-            bird.position[i] += bird.velocity[i];
-            // Reverse direction if the bird goes beyond ±5 meters.
-            if (bird.position[i] < -5 || bird.position[i] > 5) {
-              bird.velocity[i] *= -1;
+        // Update the bird’s position and behavior
+        update(delta, birds) {
+          // Decrement the behavior timer
+          this.timer -= delta;
+          if (this.timer <= 0) {
+            // Randomly choose a new behavior when the timer runs out.
+            const r = Math.random();
+            if (r < 0.3 && birds.length > 1) {
+              // Chasing: pick a random target (not self)
+              let target;
+              do {
+                target = birds[Math.floor(Math.random() * birds.length)];
+              } while (target === this);
+              this.state = "chasing";
+              this.target = target;
+              this.timer = Math.random() * 3 + 1; // chase for 1 to 4 seconds
+            } else if (r < 0.4) {
+              // Perching: slow down (simulate a brief pause)
+              this.state = "perching";
+              this.timer = Math.random() * 2 + 1; // perch for 1 to 3 seconds
+            } else {
+              // Random flying
+              this.state = "flying";
+              this.timer = Math.random() * 3 + 2; // fly for 2 to 5 seconds
             }
           }
-        });
+
+          if (this.state === "chasing" && this.target) {
+            // Calculate direction toward the target bird
+            const direction = new THREE.Vector3()
+              .subVectors(this.target.position, this.position)
+              .normalize();
+            // Gradually adjust velocity toward the target direction
+            this.velocity.lerp(direction.multiplyScalar(0.02), 0.05);
+          } else if (this.state === "perching") {
+            // Slow the bird down to simulate perching
+            this.velocity.multiplyScalar(0.95);
+          } else if (this.state === "flying") {
+            // Add a slight random perturbation to the velocity
+            const randomVec = new THREE.Vector3(
+              (Math.random() - 0.5) * 0.005,
+              (Math.random() - 0.5) * 0.005,
+              (Math.random() - 0.5) * 0.005
+            );
+            this.velocity.add(randomVec);
+            // Cap the maximum speed
+            if (this.velocity.length() > 0.03) {
+              this.velocity.setLength(0.03);
+            }
+          }
+
+          // Update position using the adjusted velocity.
+          // The delta is scaled to simulate frame-rate–independent motion.
+          this.position.add(this.velocity.clone().multiplyScalar(delta * 60));
+
+          // Keep birds within a spatial boundary (wrap around)
+          const boundary = 5;
+          ['x', 'y', 'z'].forEach((axis) => {
+            if (this.position[axis] > boundary) this.position[axis] = -boundary;
+            if (this.position[axis] < -boundary) this.position[axis] = boundary;
+          });
+
+          // Update the sprite’s position to match the simulation
+          this.sprite.position.copy(this.position);
+        }
       }
+
+      // Set up the Three.js scene
+      const scene = new THREE.Scene();
+
+      // Create a WebGL renderer with transparency enabled
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      // Set the clear color with alpha 0 so the background remains transparent
+      renderer.setClearColor(0x000000, 0);
+      document.body.appendChild(renderer.domElement);
+
+      // Add the AR button to enter an immersive AR session
+      document.body.appendChild(
+        ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
+      );
+
+      // Although XR provides its own camera, we create one here for compatibility.
+      const camera = new THREE.PerspectiveCamera(
+        70,
+        window.innerWidth / window.innerHeight,
+        0.01,
+        20
+      );
+
+      // Add some ambient lighting
+      const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+      scene.add(light);
+
+      // Create an array of birds
+      const birds = [];
+      const numBirds = 10;
+      for (let i = 0; i < numBirds; i++) {
+        const bird = new Bird();
+        birds.push(bird);
+        scene.add(bird.sprite);
+      }
+
+      // Adjust the renderer and camera when the window is resized
+      window.addEventListener("resize", () => {
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+      });
+
+      // Main animation loop for the AR session
+      renderer.setAnimationLoop((delta) => {
+        // Update each bird’s behavior and position
+        birds.forEach((bird) => {
+          bird.update(delta, birds);
+        });
+        // Render the scene using the XR camera
+        renderer.render(scene, camera);
+      });
     </script>
   </body>
 </html>
