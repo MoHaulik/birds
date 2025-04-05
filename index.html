@@ -46,7 +46,7 @@
           );
           const spriteMaterial = new THREE.SpriteMaterial({
             map: spriteMap,
-            color: 0xffff00, // yellow
+            color: 0xffff00 // yellow
           });
           this.sprite = new THREE.Sprite(spriteMaterial);
           // Scale the sprite so it appears as a small pixel in AR space.
@@ -111,7 +111,7 @@
 
           // Keep birds within a spatial boundary (wrap around)
           const boundary = 5;
-          ['x', 'y', 'z'].forEach((axis) => {
+          ["x", "y", "z"].forEach((axis) => {
             if (this.position[axis] > boundary) this.position[axis] = -boundary;
             if (this.position[axis] < -boundary) this.position[axis] = boundary;
           });
@@ -133,8 +133,9 @@
       document.body.appendChild(renderer.domElement);
 
       // Add the AR button to enter an immersive AR session
+      // Make 'hit-test' optional instead of required
       document.body.appendChild(
-        ARButton.createButton(renderer, { requiredFeatures: ['hit-test'] })
+        ARButton.createButton(renderer, { optionalFeatures: ['hit-test'] })
       );
 
       // Although XR provides its own camera, we create one here for compatibility.
